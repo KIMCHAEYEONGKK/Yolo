@@ -1,0 +1,37 @@
+train: /Users/user/Desktop/Lite-Mono/kitti_yolo_obstacle/images/train
+val: /Users/user/Desktop/Lite-Mono/kitti_yolo_obstacle/images/val
+nc: 1
+names: ['obstacle']
+
+hsv_h: 0.015        # 색조 변화 범위
+hsv_s: 0.7          # 채도 변화 범위
+hsv_v: 0.4          # 밝기 변화 범위
+degrees: 0.0        # 회전 각도
+translate: 0.1      # 위치 이동 범위
+scale: 0.5          # 스케일(확대/축소)
+shear: 0.0          # 기울이기
+perspective: 0.0    # 원근 왜곡
+flipud: 0.0         # 수직 뒤집기 확률
+fliplr: 0.5         # 수평 뒤집기 확률
+mosaic: 1.0         # Mosaic 증강 사용 확률
+mixup: 0.2          # MixUp 증강 사용 확률
+copy_paste: 0.0     # YOLOv5.7+ Copy-Paste 증강 사용
+
+# 학습 관련 하이퍼파라미터
+lr0: 0.01           # 초기 학습률 (SGD)
+lrf: 0.01           # 최종 학습률 (lr0 * lrf)
+momentum: 0.937     # SGD 모멘텀
+weight_decay: 0.0005  # 가중치 감소
+warmup_epochs: 3.0  # 워밍업 epoch 수
+warmup_bias_lr: 0.1 # bias용 워밍업 학습률
+box: 0.05           # box loss 가중치
+cls: 0.5            # class loss 가중치
+cls_pw: 1.0         # class loss 파워
+obj: 1.0            # objectness loss 가중치
+obj_pw: 1.0         # objectness loss 파워
+iou_t: 0.20         # IoU threshold
+anchor_t: 4.0       # anchor-matching threshold
+fl_gamma: 0.0       # focal loss gamma (0이면 focal 미사용)
+
+# 기타
+label_smoothing: 0.0  # 라벨 스무딩
