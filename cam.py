@@ -170,7 +170,7 @@ def run_video_inference(weights_folder, video_path):
 
         results = yolo_model(enhanced)[0]
 
-        max_brightness = -1
+        # max_brightness = -1
         max_brightness_in_region = {"Left": -1, "Center": -1, "Right": -1}
         for box in results.boxes:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -182,8 +182,8 @@ def run_video_inference(weights_folder, video_path):
                     distance = (f_kitti * B_kitti) / disparity
                     brightness = int(np.mean(depth_map[cy, cx]))
                     label = f"{brightness}"
-                    if brightness > max_brightness:
-                        max_brightness = brightness
+                    # if brightness > max_brightness:
+                    #     max_brightness = brightness
                     
                     if cx < w // 3:
                         max_brightness_in_region["Left"] = max(max_brightness_in_region["Left"], brightness)
@@ -202,10 +202,10 @@ def run_video_inference(weights_folder, video_path):
             cv2.putText(depth_bgr, label, (cx + 10, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
 
-        cv2.putText(enhanced, f"Max Center Brightness: {max_brightness}", (10, 70),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
+        # cv2.putText(enhanced, f"Max Center Brightness: {max_brightness}", (10, 70),
+        #     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
         
-
+ 
         brightness_threshold = 200
         # 기본값은 직진
         avoidance_direction = "Center"
@@ -214,7 +214,13 @@ def run_video_inference(weights_folder, video_path):
         if max_brightness_in_region["Center"] >= brightness_threshold:
             left_brightness = max(max_brightness_in_region["Left"], 0)
             right_brightness = max(max_brightness_in_region["Right"], 0)
-            if left_brightness < right_brightness:
+            # if left_brightness < right_brightness:
+            #     avoidance_direction = "Left"
+            # else:
+            #     avoidance_direction = "Right"
+            if left_brightness >= brightness_threshold and right_brightness >= brightness_threshold:
+                avoidance_direction = "Stop"
+            elif left_brightness < right_brightness:
                 avoidance_direction = "Left"
             else:
                 avoidance_direction = "Right"
