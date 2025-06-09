@@ -82,18 +82,6 @@ def brightness_enhancement(img, clip_limit=3.0, brightness_threshold=5.0):
 
     return np.hstack((left_img, right_img))
 
-# --- Color Mapping ---
-# def create_colormap(np_array, cmap_name='magma', vmin=None, vmax=None, gamma=1.0):
-#     np_array = np_array ** gamma
-#     if vmin is None:
-#         vmin = np_array.min()
-#     if vmax is None:
-#         vmax = np.percentile(np_array, 99)
-#     normalizer = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
-#     mapper = cm.ScalarMappable(norm=normalizer, cmap=cmap_name)
-#     colormapped = (mapper.to_rgba(np_array)[:, :, :3] * 255).astype(np.uint8)
-#     return colormapped
-
 def create_colormap(disp_np):
     vmax = np.percentile(disp_np, 99)
     normalizer = mpl.colors.Normalize(vmin=disp_np.min(), vmax=vmax)
@@ -141,7 +129,7 @@ def infer_frame(encoder, decoder, frame, feed_width, feed_height, device):
 # --- 실시간 추론 및 객체 거리 시각화 ---
 def run_video_inference(weights_folder, video_path):
     encoder, decoder, feed_h, feed_w = load_model(weights_folder)
-    yolo_model = YOLO("best4.pt")
+    yolo_model = YOLO("best4.engine")
     cap = cv2.VideoCapture(video_path)
 
     while cap.isOpened():
