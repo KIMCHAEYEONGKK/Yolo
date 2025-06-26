@@ -9,12 +9,21 @@ from torchvision.models.detection import maskrcnn_resnet50_fpn
 import torchvision.transforms.functional as F
 from LiteMono.networks.depth_encoder_only_ghostinCDC import LiteMono
 from LiteMono.networks.depth_decoder import DepthDecoder
+from ptflops import get_model_complexity_info
 from LiteMono.layers import disp_to_depth
 import matplotlib.cm as cm
 import matplotlib as mpl
 
 f_kitti = 721.5377
 B_kitti = 0.5327
+
+def print_model_flops(model, height, width):
+    with torch.cuda.device(0):
+        macs, params = get_model_complexity_info(
+            model, (3, height, width), as_strings=True,
+            print_per_layer_stat=False, verbose=False)
+    print(f"[FLOPs] Encoder MACs: {macs} | Parameters: {params}")
+
 
 def apply_clahe_rgb(img, clip_limit=3.0):
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
@@ -96,14 +105,31 @@ def run_video_inference(weights_folder, video_path):
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret: break
+
         start_time = time.time()
-        enhanced = brightness_enhancement(frame)
+        enhanced = brightness_enhancement(frame, brightness_threshold=7.0)
         disp_np = infer_frame(encoder, decoder, enhanced, feed_w, feed_h, device)
         depth_map = create_colormap(disp_np)
         depth_bgr = cv2.cvtColor(depth_map, cv2.COLOR_RGB2BGR)
 
+        #화면 3등분으로 나누기
+        h, w = disp_np.shape
+        thirds = np.array_split(disp_np, 3, axis=1)  # axis=1은 width 방향
+
+        region_names = ["Left", "Center", "Right"]
+        region_positions = [(int(w * 1 / 6), 50), (int(w * 3 / 6), 50), (int(w * 5 / 6), 50)]
+        for region, (x, y), name in zip(thirds, region_positions, region_names):
+            mean_disp = np.mean(region)
+            if mean_disp > 0:
+                distance = (f_kitti * B_kitti) / mean_disp
+                label = f"{name}"
+            else:
+                label = "N/A"
+            cv2.putText(enhanced, label, (x - 40, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+
+
         max_brightness_in_region = {"Left": -1, "Center": -1, "Right": -1}
-        w = frame.shape[1]
+        # w = frame.shape[1]
 
         img_tensor = preprocess_for_maskrcnn(enhanced, device)
         with torch.no_grad():
@@ -139,25 +165,41 @@ def run_video_inference(weights_folder, video_path):
             cv2.putText(enhanced, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
             cv2.putText(depth_bgr, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
 
-        direction = "Center"
-        if max_brightness_in_region["Center"] >= 200:
-            left, right = max_brightness_in_region["Left"], max_brightness_in_region["Right"]
-            if left >= 200 and right >= 200:
-                direction = "Stop"
-            elif left < right:
-                direction = "Left"
-            else:
-                direction = "Right"
+        brightness_threshold = 200
+        # 기본값은 직진
+        avoidance_direction = "Center"
 
-        fps = 1.0 / (time.time() - start_time)
+        # 중앙이 밝기 기준을 초과한 경우에만 회피 판단
+        if max_brightness_in_region["Center"] >= brightness_threshold:
+            left_brightness = max(max_brightness_in_region["Left"], 0)
+            right_brightness = max(max_brightness_in_region["Right"], 0)
+            # if left_brightness < right_brightness:
+            #     avoidance_direction = "Left"
+            # else:
+            #     avoidance_direction = "Right"
+            if left_brightness >= brightness_threshold and right_brightness >= brightness_threshold:
+                avoidance_direction = "Stop"
+            elif left_brightness < right_brightness:
+                avoidance_direction = "Left"
+            else:
+                avoidance_direction = "Right"
+
+        # FPS 계산 및 표시
+        end_time = time.time()
+        fps = 1.0 / (end_time - start_time)
         cv2.putText(enhanced, f"FPS: {fps:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
-        cv2.putText(enhanced, f"{direction}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 100, 255), 2)
+        cv2.putText(enhanced, f"{avoidance_direction}", (10, 90),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 100, 255), 2)
+
         combined = np.hstack((enhanced, depth_bgr))
-        cv2.imshow("Mask R-CNN + LiteMono", combined)
+        cv2.imshow("YOLO + LiteMono | Real-time Inference", combined)
         if cv2.waitKey(1) & 0xFF == ord('q'): break
 
     cap.release()
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    run_video_inference("lite-mono_640x192", "output_video.mp4")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    weights_folder = "lite-mono_640x192"
+    video_path = "output.mp4"
+    run_video_inference(weights_folder,video_path)
