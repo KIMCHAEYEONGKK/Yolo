@@ -1,168 +1,249 @@
 import os
 import cv2
-import time
 import torch
 import numpy as np
-import matplotlib as mpl
-import matplotlib.cm as cm
+import time
 from PIL import Image
 from torchvision import transforms
 from ultralytics import YOLO
-from networks.depth_encoder import LiteMono
-from networks.depth_decoder import DepthDecoder
-from layers import disp_to_depth
-from types import SimpleNamespace
+from LiteMono.networks.depth_encoder_only_ghostinCDC import LiteMono
+from LiteMono.networks.depth_decoder import DepthDecoder
+from LiteMono.layers import disp_to_depth
 from ptflops import get_model_complexity_info
+import matplotlib.cm as cm
+import matplotlib as mpl
+# from your_trt_wrapper import TRT_YOLO
 
 # --- Camera Parameters ---
 f_kitti = 721.5377
 B_kitti = 0.5327
-f_realsense = 1.33
-B_realsense = 0.05
 
 def print_model_flops(model, height, width):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    macs, params = get_model_complexity_info(
-        model.to(device), (3, height, width), as_strings=True,
-        print_per_layer_stat=False, verbose=False)
+    with torch.cuda.device(0):
+        macs, params = get_model_complexity_info(
+            model, (3, height, width), as_strings=True,
+            print_per_layer_stat=False, verbose=False)
     print(f"[FLOPs] Encoder MACs: {macs} | Parameters: {params}")
 
+# --- Brightness Enhancement ---
+def apply_clahe_rgb(img, clip_limit=3.0):
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
+    l_clahe = clahe.apply(l)
+    return cv2.cvtColor(cv2.merge((l_clahe, a, b)), cv2.COLOR_LAB2BGR)
+
+def adjust_gamma(image, gamma=1.5):
+    inv_gamma = 1.0 / gamma
+    table = np.array([(i / 255.0) ** inv_gamma * 255 for i in range(256)]).astype("uint8")
+    return cv2.LUT(image, table)
+
+def brightness_enhancement(img, clip_limit=3.0, brightness_threshold=5.0):
+    h, w = img.shape[:2]
+    slice_width = max(w // 10, 1)
+
+    # 중심 및 전체 밝기 기준 계산
+    center_slice = img[:, w//2 - slice_width : w//2 + slice_width]
+    target_brightness = np.mean(cv2.cvtColor(center_slice, cv2.COLOR_BGR2GRAY))
+    global_brightness = np.mean(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
+
+    # CLAHE 대비 보정
+    if global_brightness < 60:
+        clahe_limit = clip_limit + 1.5
+    else:
+        clahe_limit = clip_limit
+    img = apply_clahe_rgb(img, clip_limit=clahe_limit)
+
+    # 좌우 분할
+    left_img = img[:, :w//2]
+    right_img = img[:, w//2:]
+
+    left_brightness = np.mean(cv2.cvtColor(left_img, cv2.COLOR_BGR2GRAY))
+    right_brightness = np.mean(cv2.cvtColor(right_img, cv2.COLOR_BGR2GRAY))
+
+    # 밝기 보정 함수 정의
+    def enhance_region(region_img, region_brightness):
+        diff = abs(target_brightness - region_brightness)
+
+        if global_brightness < 50 or diff > brightness_threshold:
+            gamma_boost = 1.5 if global_brightness < 40 else 1.2
+            estimated_gamma = np.log(target_brightness + 1e-6) / np.log(region_brightness + 1e-6)
+            blended_gamma = (estimated_gamma + gamma_boost) / 2
+            region_img = np.clip(adjust_gamma(region_img, gamma=blended_gamma), 0, 255).astype(np.uint8)
+
+        elif global_brightness > 180 or region_brightness > 200:
+            suppress_gamma = 0.6  # 감마 < 1은 어둡게 만듦
+            region_img = np.clip(adjust_gamma(region_img, gamma=suppress_gamma), 0, 255).astype(np.uint8)
+
+        return region_img
+
+    left_img = enhance_region(left_img, left_brightness)
+    right_img = enhance_region(right_img, right_brightness)
+
+    return np.hstack((left_img, right_img))
+
+def create_colormap(disp_np):
+    vmax = np.percentile(disp_np, 99)
+    normalizer = mpl.colors.Normalize(vmin=disp_np.min(), vmax=vmax)
+    mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
+    colormapped = (mapper.to_rgba(disp_np)[:, :, :3] * 255).astype(np.uint8)
+    return colormapped
+
+# --- Model Load --- 
 def load_model(weights_folder):
     encoder_path = os.path.join(weights_folder, "encoder.pth")
     decoder_path = os.path.join(weights_folder, "depth.pth")
-    encoder_dict = torch.load(encoder_path, map_location=torch.device('cpu'))
-    decoder_dict = torch.load(decoder_path, map_location=torch.device('cpu'))
+    encoder_dict = torch.load(encoder_path)
+    decoder_dict = torch.load(decoder_path)
 
     height = encoder_dict['height']
     width = encoder_dict['width']
 
     encoder = LiteMono(height=height, width=width)
     encoder.load_state_dict({k: v for k, v in encoder_dict.items() if k in encoder.state_dict()})
-    encoder.eval()
+    encoder.eval().to(device)
 
     decoder = DepthDecoder(encoder.num_ch_enc, scales=range(3))
     decoder.load_state_dict({k: v for k, v in decoder_dict.items() if k in decoder.state_dict()})
-    decoder.eval()
-
+    decoder.eval().to(device)
     print_model_flops(encoder, height, width)
 
     return encoder, decoder, height, width
 
-#조도 기반 전처리
-def apply_clahe_rgb(img):
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    l = clahe.apply(l)
-    lab = cv2.merge((l, a, b))
-    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+# --- 추론 ---
+def infer_frame(encoder, decoder, frame, feed_width, feed_height, device):
+    input_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    original_width, original_height = input_image.size
+    input_image = input_image.resize((feed_width, feed_height), Image.LANCZOS)
+    input_tensor = transforms.ToTensor()(input_image).unsqueeze(0).to(device)
 
-#감마 보정 함수
-def adjust_gamma(image, gamma=1.0):
-    inv_gamma = 1.0 / gamma
-    table = np.array([(i / 255.0) ** inv_gamma * 255 for i in range(256)]).astype("uint8")
-    return cv2.LUT(image, table)
+    with torch.no_grad():
+        features = encoder(input_tensor)
+        outputs = decoder(features)
+        disp = outputs[("disp", 0)]
+        disp_resized = torch.nn.functional.interpolate( 
+            disp, (original_height, original_width), mode="bilinear", align_corners=False)
 
-def create_colormap(np_array, cmap_name='magma', vmin=None, vmax=None):
-    if vmin is None:
-        vmin = np_array.min()
-    if vmax is None:
-        vmax = np.percentile(np_array, 95)
-    normalizer = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
-    mapper = cm.ScalarMappable(norm=normalizer, cmap=cmap_name)
-    colormapped = (mapper.to_rgba(np_array)[:, :, :3] * 255).astype(np.uint8)
-    return colormapped
+    return disp_resized.squeeze().cpu().numpy()
 
-def run_image_inference(image_path, weights_folder):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    encoder, decoder, feed_height, feed_width = load_model(weights_folder)
-    encoder.to(device)
-    decoder.to(device)
+# --- 실시간 추론 및 객체 거리 시각화 ---
+def run_video_inference(weights_folder, video_path):
+    encoder, decoder, feed_h, feed_w = load_model(weights_folder)
+    yolo_model = YOLO("/home/deeplearning/workspace/cy/yolov5/runs/segment/train2/weights/best.pt")
+    cap = cv2.VideoCapture(video_path)
 
-    yolo_model = YOLO("/Users/user/Desktop/Lite-Mono/yolov8n-seg.onnx")
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret: break
 
-    paths = [os.path.join(image_path, f) for f in sorted(os.listdir(image_path)) if f.endswith(('.jpg', '.png'))] \
-        if os.path.isdir(image_path) else [image_path]
+        enhanced = brightness_enhancement(frame, brightness_threshold=7.0)
 
-    os.makedirs("output", exist_ok=True)
+        # FPS 측정 시작
+        start_time = time.time()
 
-    for img_path in paths:
-        img = cv2.imread(img_path)
-        if img is None:
-            print(f"Cannot read {img_path}")
-            continue
-
-        img = apply_clahe_rgb(img)
-        img = adjust_gamma(img, gamma=1.5)
-
-        original = img.copy()
-        input_image = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)).resize((feed_width, feed_height), Image.LANCZOS)
-        input_tensor = transforms.ToTensor()(input_image).unsqueeze(0).to(device)
+        input_tensor = transforms.ToTensor()(Image.fromarray(cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB)).resize((feed_w, feed_h))).unsqueeze(0).to(device)
 
         with torch.no_grad():
             features = encoder(input_tensor)
             outputs = decoder(features)
             disp = outputs["disp", 0]
-            disp_resized = torch.nn.functional.interpolate(disp, (img.shape[0], img.shape[1]), mode="bilinear", align_corners=False)
+            disp_resized = torch.nn.functional.interpolate(disp, (frame.shape[0], frame.shape[1]), mode="bilinear", align_corners=False)
 
         disp_np = disp_resized.squeeze().cpu().numpy()
         depth_map = create_colormap(disp_np)
-        depth_map_bgr = cv2.cvtColor(depth_map, cv2.COLOR_RGB2BGR)
+        depth_bgr = cv2.cvtColor(depth_map, cv2.COLOR_RGB2BGR)
 
-        results = yolo_model.predict(source=img, device=device, verbose=False)[0]
+        #화면 3등분으로 나누기
+        h, w = disp_np.shape
+        thirds = np.array_split(disp_np, 3, axis=1)  # axis=1은 width 방향
+
+        region_names = ["Left", "Center", "Right"]
+        region_positions = [(int(w * 1 / 6), 50), (int(w * 3 / 6), 50), (int(w * 5 / 6), 50)]
+        for region, (x, y), name in zip(thirds, region_positions, region_names):
+            mean_disp = np.mean(region)
+            if mean_disp > 0:
+                distance = (f_kitti * B_kitti) / mean_disp
+                label = f"{name}"
+            else:
+                label = "N/A"
+
+            cv2.putText(enhanced, label, (x - 40, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+
+        results = yolo_model(enhanced)[0]
         
-        if results.masks is None or results.masks.data is None:
-            print("마스크가 탐지되지 않았습니다.")
-        else:
-            for i, mask in enumerate(results.masks.data):
-                # 이진 마스크로 변환
-                mask_np = (mask > 0.5).cpu().numpy().astype(np.uint8)
+        max_brightness_in_region = {"Left": -1, "Center": -1, "Right": -1}
+        if results.masks is not None:
+            all_mask_bool = np.zeros((enhanced.shape[0], enhanced.shape[1]), dtype=bool)
 
-                if cv2.countNonZero(mask_np) < 10:
-                    continue
+            for mask, box in zip(results.masks.data, results.boxes.xyxy):
+                x1, y1 = map(int, box[:2])
 
-                # 마스크 크기 보정
-                mask_np = cv2.resize(mask_np, (disp_np.shape[1], disp_np.shape[0]), interpolation=cv2.INTER_NEAREST)
+                # --- 마스크 처리 ---
+                mask = mask.cpu().numpy()
+                mask_resized = cv2.resize(mask, (enhanced.shape[1], enhanced.shape[0]))
+                mask_bool = mask_resized > 0.5
 
-                # disparity 계산
-                #마스크 영역에만 해당하는 disparity값들만 추출
-                disparity_vals = disp_np[mask_np == 1]
-                disparity = np.mean(disparity_vals) if len(disparity_vals) > 0 else 0
+                # 합쳐서 전체 마스크 만듦
+                all_mask_bool = np.logical_or(all_mask_bool, mask_bool)
 
-                if disparity > 0:
-                    distance = (f_kitti * B_kitti) / disparity
+                # --- 마스크 색상 Overlay (enhanced + depth_bgr) ---
+                mask_color = np.zeros_like(enhanced)
+                mask_color[mask_bool] = (0, 255, 0)
 
-                    # 밝기 계산
-                    mask_pixels = original[mask_np == 1]
-                    brightness_vals = 0.299 * mask_pixels[:, 0] + 0.587 * mask_pixels[:, 1] + 0.114 * mask_pixels[:, 2]
-                    brightness = int(np.mean(brightness_vals))
-                    label = f"{brightness}"
+                enhanced = cv2.addWeighted(enhanced, 1.0, mask_color, 0.5, 0)
+                depth_bgr = cv2.addWeighted(depth_bgr, 1.0, mask_color, 0.5, 0)
+
+      
+                if np.sum(mask_bool) > 0:
+                    mean_disp_in_mask = np.mean(disp_np[mask_bool])
+                    depth_gray = cv2.cvtColor(depth_map, cv2.COLOR_RGB2GRAY)
+                    brightness = int(np.mean(depth_gray[mask_bool]))
+
+                    if mean_disp_in_mask > 0:
+                        distance = (f_kitti * B_kitti) / mean_disp_in_mask
+                        label = f"{brightness}"
+                    else:
+                        label = "N/A"
                 else:
                     label = "N/A"
 
-                # 외곽선 시각화
-                contours, _ = cv2.findContours(mask_np, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                cv2.drawContours(original, contours, -1, (255, 0, 0), 2)
-                cv2.drawContours(depth_map_bgr, contours, -1, (255, 0, 0), 2)
+                cv2.putText(enhanced, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                cv2.putText(depth_bgr, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
-                #마스크 경계선을 검추라혀 원본이미지와 깊이 이미지에 시각화
-                if contours:
-                    M = cv2.moments(contours[0])
-                    if M["m00"] != 0:
-                        cX = int(M["m10"] / M["m00"])
-                        cY = int(M["m01"] / M["m00"])
-                        cv2.putText(original, label, (cX + 10, cY),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
-                        cv2.putText(depth_map_bgr, label, (cX + 10, cY),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+        brightness_threshold = 200
+        # 기본값은 직진
+        avoidance_direction = "Center"
 
-        combined = np.hstack((original, depth_map_bgr))
-        basename = os.path.splitext(os.path.basename(img_path))[0]
-        output_path = f"output/{basename}_depth_yolo.jpg"
-        cv2.imwrite(output_path, combined)
-        print(f"Saved to {output_path}")
+        # 중앙이 밝기 기준을 초과한 경우에만 회피 판단
+        if max_brightness_in_region["Center"] >= brightness_threshold:
+            left_brightness = max(max_brightness_in_region["Left"], 0)
+            right_brightness = max(max_brightness_in_region["Right"], 0)
+            if left_brightness >= brightness_threshold and right_brightness >= brightness_threshold:
+                avoidance_direction = "Stop"
+            elif left_brightness < right_brightness:
+                avoidance_direction = "Left"
+            else:
+                avoidance_direction = "Right"
 
+        # FPS 계산 및 표시
+        end_time = time.time()
+        fps = 1.0 / (end_time - start_time)
+        cv2.putText(enhanced, f"FPS: {fps:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
+        cv2.putText(enhanced, f"{avoidance_direction}", (10, 90),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 100, 255), 2)
+
+        combined = np.hstack((enhanced, depth_bgr))
+        cv2.imshow("YOLO + LiteMono | Real-time Inference", combined)
+        if cv2.waitKey(1) & 0xFF == ord('q'): break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+# --- Entry ---
 if __name__ == "__main__":
-    image_path ="/Users/user/Desktop/Lite-Mono/kitti_data/2011_09_29/2011_09_29_drive_0071_sync/image_02/data"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     weights_folder = "lite-mono_640x192"
-    run_image_inference(image_path, weights_folder)
+    video_path = "output_video.mp4"
+    run_video_inference(weights_folder, video_path)
+
+
