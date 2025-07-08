@@ -154,19 +154,51 @@ def run_video_inference(weights_folder, video_path):
         depth_bgr = cv2.cvtColor(depth_map, cv2.COLOR_RGB2BGR)
 
         #화면 3등분으로 나누기
-        h, w = disp_np.shape
-        thirds = np.array_split(disp_np, 3, axis=1)  # axis=1은 width 방향
+        # h, w = disp_np.shape
+        # thirds = np.array_split(disp_np, 3, axis=1)  # axis=1은 width 방향
 
+        # region_names = ["Left", "Center", "Right"]
+        # region_positions = [(int(w * 1 / 6), 50), (int(w * 3 / 6), 50), (int(w * 5 / 6), 50)]
+        # for region, (x, y), name in zip(thirds, region_positions, region_names):
+        #     mean_disp = np.mean(region)
+        #     if mean_disp > 0:
+        #         distance = (f_kitti * B_kitti) / mean_disp
+        #         label = f"{name}"
+        #     else:
+        #         label = "N/A"
+        #     cv2.putText(enhanced, label, (x - 40, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+        h, w = disp_np.shape
+
+        #아래쪽 ROI만 사용 (하단 40%)
+        roi_top = int(h * 0.6)
+        disp_roi = disp_np[roi_top:, :]
+
+        #비대칭 3분할
+        left_region = disp_roi[:, :int(0.4 * w)]
+        center_region = disp_roi[:, int(0.4 * w):int(0.6 * w)]
+        right_region = disp_roi[:, int(0.6 * w):]
+
+        thirds = [left_region, center_region, right_region]
         region_names = ["Left", "Center", "Right"]
-        region_positions = [(int(w * 1 / 6), 50), (int(w * 3 / 6), 50), (int(w * 5 / 6), 50)]
+
+        #텍스트 표시 위치 조정
+        region_positions = [
+            (int(w * 0.2), 50),     
+            (int(w * 0.5), 50),     
+            (int(w * 0.8), 50)      
+        ]
+
+        #각 영역별 거리 계산 및 표시
         for region, (x, y), name in zip(thirds, region_positions, region_names):
             mean_disp = np.mean(region)
+
             if mean_disp > 0:
                 distance = (f_kitti * B_kitti) / mean_disp
                 label = f"{name}"
             else:
-                label = "N/A"
-            cv2.putText(enhanced, label, (x - 40, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+                 "N/A"
+
+            cv2.putText(enhanced, label, (x - 50, y),cv2.FONT_HERSHEY_SIMPLEX, 0.6,(0, 200, 255), 2)
 
         results = yolo_model(enhanced)[0]
         max_brightness_in_region = {"Left": -1, "Center": -1, "Right": -1}
@@ -222,21 +254,6 @@ def run_video_inference(weights_folder, video_path):
                 avoidance_direction = "Left"
             else:
                 avoidance_direction = "Right"
-
-        # --- 아두이노에 명령 전송 ---
-        # if avoidance_direction == "Left":
-        #     print("Sending: L")
-        #     arduino.write(b'L\n')
-        # elif avoidance_direction == "Right":
-        #     print("Sending: R")
-        #     arduino.write(b'R\n')
-        # elif avoidance_direction =="Stop":
-        #     print("Sending: S")
-        #     arduino.write(b'S\n')
-        # else:
-        #     print("Sending: C")
-        #     arduino.write(b'C\n')
-        #     time.sleep(0.5)
 
 
         # FPS 계산 및 표시
