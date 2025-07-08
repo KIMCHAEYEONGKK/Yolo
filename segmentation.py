@@ -196,8 +196,7 @@ def run_video_inference(weights_folder, video_path):
       
                 if np.sum(mask_bool) > 0:
                     mean_disp_in_mask = np.mean(disp_np[mask_bool])
-                    depth_gray = cv2.cvtColor(depth_map, cv2.COLOR_RGB2GRAY)
-                    brightness = int(np.mean(depth_gray[mask_bool]))
+                    brightness = int(np.mean(depth_map[mask_bool]))
 
                     if mean_disp_in_mask > 0:
                         distance = (f_kitti * B_kitti) / mean_disp_in_mask
