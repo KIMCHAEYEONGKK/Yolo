@@ -1,14 +1,14 @@
 from ultralytics import YOLO
 
 # Load the YOLO11 model
-model = YOLO("best4.pt")
+model = YOLO("best-seg.pt")
 
 # Export the model to TensorRT format
-model.export(
-    format="engine",
-)
-# Load the exported TensorRT model 
-tensorrt_model = YOLO("best1.engine",task="detect")
+model.export(format="engine", dynamic=True,simplify=True, optimize=False, half=True)  # creates 'yolo11n.engine'
+
+
+# Load the exported TensorRT model
+model = YOLO("best-seg.engine", task="segment")
 
 # Run inference
-results = tensorrt_model("https://ultralytics.com/images/bus.jpg")
+result = model.predict("https://ultralytics.com/images/bus.jpg")
