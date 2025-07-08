@@ -1,6 +1,0 @@
-train: datasets/images/train
-val: datasets/images/val
-
-nc: 80
-names:
- 
