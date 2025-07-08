@@ -183,20 +183,28 @@ def run_video_inference(weights_folder, video_path):
                 mask_resized = cv2.resize(mask, (enhanced.shape[1], enhanced.shape[0]))
                 mask_bool = mask_resized > 0.5
 
-                # 합쳐서 전체 마스크 만듦
                 all_mask_bool = np.logical_or(all_mask_bool, mask_bool)
 
-                # --- 마스크 색상 Overlay (enhanced + depth_bgr) ---
                 mask_color = np.zeros_like(enhanced)
                 mask_color[mask_bool] = (0, 255, 0)
-
                 enhanced = cv2.addWeighted(enhanced, 1.0, mask_color, 0.5, 0)
                 depth_bgr = cv2.addWeighted(depth_bgr, 1.0, mask_color, 0.5, 0)
 
-      
                 if np.sum(mask_bool) > 0:
                     mean_disp_in_mask = np.mean(disp_np[mask_bool])
                     brightness = int(np.mean(depth_map[mask_bool]))
+
+                    # 영역 판별: 마스크 중심 X좌표
+                    region_center_x = int((box[0] + box[2]) / 2)
+                    if region_center_x < w // 3:
+                        region_name = "Left"
+                    elif region_center_x < (2 * w // 3):
+                        region_name = "Center"
+                    else:
+                        region_name = "Right"
+
+                    # 최대 밝기 갱신
+                    max_brightness_in_region[region_name] = max(max_brightness_in_region[region_name], brightness)
 
                     if mean_disp_in_mask > 0:
                         distance = (f_kitti * B_kitti) / mean_disp_in_mask
@@ -208,8 +216,8 @@ def run_video_inference(weights_folder, video_path):
 
                 cv2.putText(enhanced, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
                 cv2.putText(depth_bgr, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-
-        brightness_threshold = 200
+        
+        brightness_threshold = 180
         # 기본값은 직진
         avoidance_direction = "Center"
 
