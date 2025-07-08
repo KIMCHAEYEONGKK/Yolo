@@ -129,7 +129,7 @@ def infer_frame(encoder, decoder, frame, feed_width, feed_height, device):
 # --- 실시간 추론 및 객체 거리 시각화 ---
 def run_video_inference(weights_folder, video_path):
     encoder, decoder, feed_h, feed_w = load_model(weights_folder)
-    yolo_model = YOLO("/home/deeplearning/workspace/cy/yolov5/runs/segment/train2/weights/best.pt")
+    yolo_model = YOLO("best-seg.engine")
     cap = cv2.VideoCapture(video_path)
 
     while cap.isOpened():
